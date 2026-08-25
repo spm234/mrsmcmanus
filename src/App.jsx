@@ -233,14 +233,24 @@ function useStore() {
   }, [cloud, data]);
 
   const startFreshInCloud = useCallback(async () => {
-    const ok = await cloud.pushToCloud(data);
+    const ok = await cloud.pushToCloud(EMPTY);
     if (ok) setSyncStatus("synced");
     return ok;
-  }, [cloud, data]);
+  }, [cloud]);
+
+  // Loads an external backup (pasted text or an uploaded file) as the starting
+  // point for a fresh account — for setting up a second device from a copy of
+  // the first device's data, rather than whatever happens to be on this one.
+  const importDataToCloud = useCallback(async (parsed) => {
+    const merged = { ...EMPTY, ...parsed };
+    const ok = await cloud.pushToCloud(merged);
+    if (ok) setSyncStatus("synced");
+    return ok;
+  }, [cloud]);
 
   return {
     data, setData: persist, loaded, saveError,
-    cloud, syncStatus, importLocalToCloud, startFreshInCloud,
+    cloud, syncStatus, importLocalToCloud, startFreshInCloud, importDataToCloud,
   };
 }
 
@@ -310,7 +320,7 @@ function buildSampleData() {
 
 /* ---------------------------------- app ------------------------------------ */
 export default function App() {
-  const { data, setData, loaded, saveError, cloud, syncStatus, importLocalToCloud, startFreshInCloud } = useStore();
+  const { data, setData, loaded, saveError, cloud, syncStatus, importLocalToCloud, startFreshInCloud, importDataToCloud } = useStore();
   const [activeId, setActiveId] = useState(null);
   const [view, setView] = useState("overview"); // overview | calendar (only used when activeId is null)
   const [tab, setTab] = useState("overview");
@@ -486,11 +496,15 @@ export default function App() {
               </h1>
               <div style={{ color: COLORS.gold, fontSize: 11.5, fontWeight: 600 }}>{OWNER.title}</div>
               <div style={{ color: COLORS.onNavyMuted, fontSize: 11 }}>{visibleStudents.length} of {students.filter((s) => !s.archived).length} active cases</div>
-              <div style={{ color: syncStatus === "synced" ? COLORS.gold : COLORS.onNavyMuted, fontSize: 10.5, marginTop: 2 }}>
-                {syncStatus === "synced" ? `Synced as ${cloud.user?.email || ""}` : "Local only — not synced"}
-              </div>
             </div>
           </div>
+          <button onClick={goSync} className="mx-5 mt-3 mb-1 px-2.5 py-1.5 rounded-md flex items-center gap-1.5 text-left"
+            style={{ background: syncStatus === "synced" ? "rgba(184,146,63,0.15)" : "rgba(255,255,255,0.06)", border: `1px solid ${syncStatus === "synced" ? COLORS.gold : COLORS.navyLine}` }}>
+            {syncStatus === "synced" ? <Cloud size={13} color={COLORS.gold} /> : <CloudOff size={13} color={COLORS.onNavyMuted} />}
+            <span style={{ fontSize: 11, fontWeight: 600, color: syncStatus === "synced" ? COLORS.gold : COLORS.onNavyMuted }}>
+              {syncStatus === "synced" ? `Account: ${cloud.user?.email || ""}` : "No account — data stays on this device only"}
+            </span>
+          </button>
 
           <div className="px-4 pt-3 pb-2 flex flex-col gap-2" style={{ borderBottom: `1px solid ${COLORS.navyLine}` }}>
             <div className="relative">
@@ -551,7 +565,12 @@ export default function App() {
             <button onClick={goSync} className="w-full text-left px-5 py-3 flex items-center gap-2"
               style={{ background: activeId === null && view === "sync" ? COLORS.navyMid : "transparent", borderBottom: `1px solid ${COLORS.navyLine}` }}>
               {syncStatus === "synced" ? <Cloud size={16} color={COLORS.gold} /> : <CloudOff size={16} color={COLORS.onNavyMuted} />}
-              <span style={{ fontSize: 13.5, fontWeight: 600, color: "#fff" }}>Sync &amp; backup</span>
+              <div className="min-w-0">
+                <div style={{ fontSize: 13.5, fontWeight: 600, color: "#fff" }}>Account &amp; sync</div>
+                <div style={{ fontSize: 10.5, color: syncStatus === "synced" ? COLORS.gold : COLORS.onNavyMuted }} className="truncate">
+                  {syncStatus === "synced" ? cloud.user?.email : "Not signed in"}
+                </div>
+              </div>
             </button>
 
             {visibleStudents.length === 0 && <div className="px-5 py-8 text-center" style={{ color: COLORS.onNavyMuted, fontSize: 13 }}>No students match. Add one to get started.</div>}
@@ -582,19 +601,11 @@ export default function App() {
             })}
           </div>
 
-          <div className="p-4 flex flex-col gap-2" style={{ borderTop: `1px solid ${COLORS.navyLine}` }}>
+          <div className="p-4" style={{ borderTop: `1px solid ${COLORS.navyLine}` }}>
             <button onClick={() => setShowAddStudent(true)} className="w-full py-2.5 rounded-md flex items-center justify-center gap-1.5 text-sm font-medium hover:opacity-90"
               style={{ background: COLORS.gold, color: COLORS.navyDeep, fontWeight: 700 }}>
               <Plus size={16} /> New case
             </button>
-            <div className="flex gap-2">
-              <button onClick={loadSampleData} className="flex-1 py-1.5 rounded-md text-xs" style={{ border: `1px solid ${COLORS.navyLine}`, color: COLORS.onNavyMuted }}>
-                Reset sample data
-              </button>
-              <button onClick={clearAllData} className="flex-1 py-1.5 rounded-md text-xs" style={{ border: `1px solid ${COLORS.navyLine}`, color: COLORS.onNavyMuted }}>
-                Clear all data
-              </button>
-            </div>
           </div>
         </div>
 
@@ -614,7 +625,9 @@ export default function App() {
             ) : view === "sync" ? (
               <SyncBackupView
                 cloud={cloud} syncStatus={syncStatus} data={data} onImportLocalToCloud={importLocalToCloud} onStartFreshInCloud={startFreshInCloud}
+                onImportDataToCloud={importDataToCloud}
                 onRestoreBackup={(restored) => setData({ ...EMPTY, ...restored })}
+                onLoadSampleData={loadSampleData} onClearAllData={clearAllData}
               />
             ) : (
               <CaseloadOverview
@@ -1373,12 +1386,16 @@ function SettingsView({ planTypes, roleOptions, students, teamBank, onAddPlanTyp
 }
 
 /* --------------------------------- Sync & backup --------------------------------- */
-function SyncBackupView({ cloud, syncStatus, data, onImportLocalToCloud, onStartFreshInCloud, onRestoreBackup }) {
+function SyncBackupView({ cloud, syncStatus, data, onImportLocalToCloud, onStartFreshInCloud, onImportDataToCloud, onRestoreBackup, onLoadSampleData, onClearAllData }) {
   const [mode, setMode] = useState("signin"); // signin | create
   const [email, setEmail] = useState(""); const [password, setPassword] = useState("");
   const [importBusy, setImportBusy] = useState(false);
   const [restoreError, setRestoreError] = useState("");
+  const [seedMode, setSeedMode] = useState(null); // null | "file" | "paste"
+  const [pasteText, setPasteText] = useState("");
+  const [seedError, setSeedError] = useState("");
   const fileRef = useRef(null);
+  const seedFileRef = useRef(null);
 
   const downloadBackup = () => {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
@@ -1408,41 +1425,87 @@ function SyncBackupView({ cloud, syncStatus, data, onImportLocalToCloud, onStart
     e.target.value = "";
   };
 
+  const seedFromParsed = async (parsed) => {
+    setSeedError("");
+    if (!parsed || typeof parsed !== "object") { setSeedError("That doesn't look like valid backup data."); return; }
+    setImportBusy(true);
+    await onImportDataToCloud(parsed);
+    setImportBusy(false);
+    setSeedMode(null);
+  };
+  const handleSeedFile = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => { try { seedFromParsed(JSON.parse(reader.result)); } catch (e) { setSeedError("That file doesn't look like a valid backup."); } };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+  const handleSeedPaste = () => {
+    try { seedFromParsed(JSON.parse(pasteText)); } catch (e) { setSeedError("That doesn't look like valid backup text — check that you copied the whole thing."); }
+  };
+
   return (
     <div className="p-6 md:p-8 max-w-3xl">
       <div className="mb-6">
-        <h2 style={{ fontFamily: "'Newsreader', serif", fontSize: 26, fontWeight: 600, color: COLORS.navy }}>Sync &amp; backup</h2>
-        <p style={{ color: COLORS.muted, fontSize: 13.5, marginTop: 2 }}>Keep your caseload up to date across devices, and back it up as a file.</p>
+        <h2 style={{ fontFamily: "'Newsreader', serif", fontSize: 26, fontWeight: 600, color: COLORS.navy }}>Account &amp; sync</h2>
+        <p style={{ color: COLORS.muted, fontSize: 13.5, marginTop: 2 }}>
+          This app works fine with no account. Creating one is what lets the same caseload follow you to another device.
+        </p>
       </div>
 
       <div className="flex flex-col gap-6">
-        <Panel title="Cross-device sync">
+        <Panel title="Your account">
           {!cloud.configured ? (
             <div style={{ fontSize: 13.5, color: COLORS.inkSoft }}>
-              Sync isn't set up yet. This needs a free Firebase project — see the <strong>Sync setup</strong> section of the README for
-              step-by-step instructions. Until then, everything here works exactly as before, saved only on this device.
+              Accounts aren't set up yet. This needs a free Firebase project — see the <strong>Sync setup</strong> section of the README for
+              step-by-step instructions. Until then, everything here works exactly as before, saved only on this device, no account needed.
             </div>
           ) : !cloud.ready ? (
             <EmptyNote text="Connecting…" />
           ) : cloud.user ? (
             <div className="flex flex-col gap-3">
-              <div className="flex items-center gap-2 text-sm">
+              <div className="flex items-center gap-2 text-sm p-2.5 rounded-md" style={{ background: COLORS.goldSoft }}>
                 <Cloud size={16} color={COLORS.navy} />
-                <span>Signed in as <strong>{cloud.user.email}</strong></span>
+                <span>Signed in as <strong>{cloud.user.email}</strong> — this device is synced to this account.</span>
               </div>
-              {syncStatus === "needs-import" && (
-                <div className="p-3 rounded-lg flex flex-col gap-2" style={{ background: COLORS.goldSoft }}>
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>This account doesn't have any cloud data yet.</div>
-                  <div style={{ fontSize: 12.5, color: COLORS.inkSoft }}>You have data on this device right now. Upload it so it becomes the starting point for sync, or start fresh in the cloud instead.</div>
-                  <div className="flex gap-2 mt-1">
+              {syncStatus === "needs-import" && !seedMode && (
+                <div className="p-3 rounded-lg flex flex-col gap-2" style={{ background: COLORS.paper, border: `1px solid ${COLORS.line}` }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>This account doesn't have any data yet — pick a starting point.</div>
+                  <div className="flex gap-2 flex-wrap mt-1">
                     <button disabled={importBusy} onClick={async () => { setImportBusy(true); await onImportLocalToCloud(); setImportBusy(false); }}
-                      className="px-3 py-1.5 rounded-md text-xs font-medium disabled:opacity-40" style={{ background: COLORS.navy, color: "#fff" }}>Upload this device's data</button>
+                      className="px-3 py-1.5 rounded-md text-xs font-medium disabled:opacity-40" style={{ background: COLORS.navy, color: "#fff" }}>Use this device's current data</button>
+                    <button disabled={importBusy} onClick={() => setSeedMode("choose")}
+                      className="px-3 py-1.5 rounded-md text-xs font-medium disabled:opacity-40" style={{ border: `1px solid ${COLORS.navy}`, color: COLORS.navy }}>Load from a backup</button>
                     <button disabled={importBusy} onClick={async () => { setImportBusy(true); await onStartFreshInCloud(); setImportBusy(false); }}
                       className="px-3 py-1.5 rounded-md text-xs" style={{ border: `1px solid ${COLORS.line}`, color: COLORS.inkSoft }}>Start fresh</button>
                   </div>
                 </div>
               )}
-              {syncStatus === "synced" && <div style={{ fontSize: 12.5, color: COLORS.muted }}>Signed in on another device with this same account will stay in sync automatically.</div>}
+              {syncStatus === "needs-import" && seedMode === "choose" && (
+                <div className="p-3 rounded-lg flex flex-col gap-2" style={{ background: COLORS.paper, border: `1px solid ${COLORS.line}` }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>Load from a backup</div>
+                  <div style={{ fontSize: 12, color: COLORS.muted }}>Use a file from "Download backup" below, or paste text copied from browser storage.</div>
+                  <div className="flex gap-2 flex-wrap">
+                    <button onClick={() => seedFileRef.current?.click()} className="px-3 py-1.5 rounded-md text-xs font-medium" style={{ background: COLORS.navy, color: "#fff" }}>Upload a file…</button>
+                    <button onClick={() => setSeedMode("paste")} className="px-3 py-1.5 rounded-md text-xs font-medium" style={{ border: `1px solid ${COLORS.line}`, color: COLORS.inkSoft }}>Paste text instead</button>
+                    <button onClick={() => setSeedMode(null)} className="px-3 py-1.5 rounded-md text-xs" style={{ color: COLORS.muted }}>Cancel</button>
+                  </div>
+                  <input ref={seedFileRef} type="file" accept="application/json" onChange={handleSeedFile} className="hidden" />
+                </div>
+              )}
+              {syncStatus === "needs-import" && seedMode === "paste" && (
+                <div className="p-3 rounded-lg flex flex-col gap-2" style={{ background: COLORS.paper, border: `1px solid ${COLORS.line}` }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>Paste backup text</div>
+                  <textarea rows={5} style={{ ...inputStyle, resize: "vertical", fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5 }} value={pasteText} onChange={(e) => setPasteText(e.target.value)} placeholder="Paste the full text here…" />
+                  <div className="flex gap-2">
+                    <button disabled={importBusy || !pasteText.trim()} onClick={handleSeedPaste} className="px-3 py-1.5 rounded-md text-xs font-medium disabled:opacity-40" style={{ background: COLORS.navy, color: "#fff" }}>Load this data</button>
+                    <button onClick={() => { setSeedMode(null); setPasteText(""); setSeedError(""); }} className="px-3 py-1.5 rounded-md text-xs" style={{ color: COLORS.muted }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+              {seedError && <div style={{ color: COLORS.red, fontSize: 12 }}>{seedError}</div>}
+              {syncStatus === "synced" && <div style={{ fontSize: 12.5, color: COLORS.muted }}>Sign into this same account on another device to keep both up to date automatically.</div>}
               <button onClick={cloud.signOutUser} className="self-start flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md" style={{ border: `1px solid ${COLORS.line}`, color: COLORS.inkSoft }}>
                 <LogOut size={13} /> Sign out
               </button>
@@ -1467,7 +1530,7 @@ function SyncBackupView({ cloud, syncStatus, data, onImportLocalToCloud, onStart
 
         <Panel title="Manual backup">
           <p style={{ color: COLORS.muted, fontSize: 12.5, marginBottom: 10 }}>
-            Works regardless of whether sync is set up. A good safety net before trying something new.
+            Works regardless of whether an account is set up. A good habit before trying something new.
           </p>
           <div className="flex gap-2 flex-wrap">
             <button onClick={downloadBackup} className="flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium" style={{ background: COLORS.navy, color: "#fff" }}>
@@ -1480,7 +1543,36 @@ function SyncBackupView({ cloud, syncStatus, data, onImportLocalToCloud, onStart
           </div>
           {restoreError && <div style={{ color: COLORS.red, fontSize: 12, marginTop: 8 }}>{restoreError}</div>}
         </Panel>
+
+        <DangerZone onLoadSampleData={onLoadSampleData} onClearAllData={onClearAllData} />
       </div>
+    </div>
+  );
+}
+
+function DangerZone({ onLoadSampleData, onClearAllData }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="p-4 rounded-lg" style={{ background: COLORS.redSoft, border: `1px solid ${COLORS.red}` }}>
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between text-left">
+        <h3 style={{ fontSize: 13, fontWeight: 700, color: COLORS.red, textTransform: "uppercase", letterSpacing: "0.03em" }}>Danger zone</h3>
+        <ChevronRight size={16} color={COLORS.red} style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+      </button>
+      {open && (
+        <div className="flex flex-col gap-2 mt-3">
+          <p style={{ color: COLORS.inkSoft, fontSize: 12.5 }}>
+            These replace everything currently loaded, on this device (and in the cloud, if this device is synced). Download a backup first if you're unsure.
+          </p>
+          <div className="flex gap-2 flex-wrap">
+            <button onClick={onLoadSampleData} className="px-3 py-1.5 rounded-md text-xs font-medium" style={{ border: `1px solid ${COLORS.red}`, color: COLORS.red, background: "#fff" }}>
+              Reset to sample data
+            </button>
+            <button onClick={onClearAllData} className="px-3 py-1.5 rounded-md text-xs font-medium" style={{ background: COLORS.red, color: "#fff" }}>
+              Clear all data
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
