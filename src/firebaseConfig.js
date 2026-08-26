@@ -2,7 +2,7 @@
 // sync. Until you do, the app works exactly as it does today — everything
 // stays on this device only, nothing changes.
 export const firebaseConfig = {
-  apiKey: "AIzaSyAwHSHdkIVP71OOB5np8W6wMIh37cqXMTU",
+  apiKey: "AIzaSyAwHSHdkIVP7lOOB5np8W6wMIh37cqXMTU",
   authDomain: "caseloads-410c6.firebaseapp.com",
   projectId: "caseloads-410c6",
   storageBucket: "caseloads-410c6.firebasestorage.app",
